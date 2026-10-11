@@ -104,6 +104,61 @@ check('масштаб не уходит ниже 40%', (await ev(`document.query
 for (let i = 0; i < 25; i++) await click('#zi');
 check('масштаб не выше 200%', (await ev(`document.querySelector('main').textContent.includes('200%')`)));
 
+// ---- F03 связать с существующим ----
+current = 'F03-H1'; await open();
+await click('#a-new'); await sleep(200); await setForm({ surname: 'Невеста', given_name: 'Новая', sex: 'F' }); await ev(`document.querySelector('#pf button[type=submit]').click()`); await sleep(300);
+await byText('tbody tr', 'Кузнецов Дмитрий'); await click('#a-rel'); await sleep(200);
+await click('input[value=wife]'); await click('#src-old'); await click('#next'); await sleep(250);
+check('список кандидатов содержит только женщин или людей без пола', await ev(`(()=>{const o=[...document.querySelectorAll('#l-who option')].map(x=>x.textContent);return o.some(t=>t.includes('Невеста'))&&!o.some(t=>t.includes('Иванов Алексей'))})()`));
+await ev(`(()=>{const s=document.querySelector('#l-who');s.value=[...s.options].find(o=>o.textContent.includes('Невеста')).value;document.querySelector('#l-m').value='2010';document.querySelector('#go').click()})()`); await sleep(300);
+check('связь создана: Невеста в супругах Дмитрия', await ev(`document.querySelector('#preview').textContent.includes('Невеста') && document.querySelector('#preview').textContent.includes('2010')`));
+current = 'F03-E1'; await byText('tbody tr', 'Кузнецов Дмитрий'); await click('#a-rel'); await sleep(200);
+await click('input[value=wife]'); await click('#src-old'); await click('#next'); await sleep(250);
+await click('#go'); await sleep(150);
+check('без выбора человека — понятная ошибка', (await ev(`document.querySelector('#form-err').textContent`)).includes('Выберите человека'));
+await ev(`document.querySelector('#cancel').click()`);
+
+// ---- S14 страница человека и печать ----
+current = 'S14-H1'; await open(); await byText('tbody tr', 'Иванов Николай'); await click('#a-page'); await sleep(300);
+check('страница человека: хронология с браком и детьми', await ev(`(()=>{const t=document.querySelector('main').textContent;return t.includes('Хронология')&&t.includes('Брак:')&&t.includes('Родился(ась) сын')})()`));
+{ const r = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.resolve(ROOT, '../replica/clone-screens/S14-1440.png'), Buffer.from(r.result.data, 'base64')); }
+await send('Emulation.setEmulatedMedia', { media: 'print' });
+check('печать: панели и кнопки скрыты', await ev(`getComputedStyle(document.querySelector('#actions')).display==='none' && getComputedStyle(document.querySelector('.top')).display==='none'`));
+await send('Emulation.setEmulatedMedia', { media: 'screen' });
+
+// ---- F07/F08 GEDCOM и копия ----
+const hook = () => ev(`window.__blobs=[]; if(!window.__hooked){const o=URL.createObjectURL.bind(URL);URL.createObjectURL=b=>{window.__blobs.push(b);return o(b)};window.__hooked=1}`);
+const pickFile = (sel, text, name) => ev(`(()=>{const dt=new DataTransfer();dt.items.add(new File([${JSON.stringify(text)}],${JSON.stringify(name)}));document.querySelector(${JSON.stringify(sel)}).files=dt.files})()`);
+current = 'F07-H1'; await open(); await hook(); await click('#a-gexp'); await sleep(200);
+check('экспорт: счётчик «11 из 11»', (await ev(`document.querySelector('#x-count').textContent`)).includes('11 из 11'));
+await click('#go'); await sleep(300);
+const ged = await ev(`window.__blobs.at(-1).text()`);
+check('файл GEDCOM: заголовок, UTF-8, 11 людей', ged.startsWith('0 HEAD') && ged.includes('1 CHAR UTF-8') && (ged.match(/ INDI\r\n/g) ?? []).length === 11);
+current = 'F07-E1'; await click('#a-gexp'); await sleep(200);
+await ev(`(()=>{const r=document.querySelector('#x-priv');r.value=5;r.dispatchEvent(new Event('input'))})()`);
+check('фильтр конфиденциальности 5: «10 из 11»', (await ev(`document.querySelector('#x-count').textContent`)).includes('10 из 11'));
+await ev(`document.querySelector('#cancel').click()`);
+current = 'F08-E1'; await open(); await click('#a-gimp'); await sleep(200);
+await pickFile('#i-file', 'это просто текст, не GEDCOM', 'x.ged'); await click('#go'); await sleep(300);
+check('не-GEDCOM: ошибка в диалоге, данные целы', (await ev(`document.querySelector('#form-err').textContent`)).includes('не похоже на файл GEDCOM') && (await ev(`document.querySelectorAll('tbody tr').length`)) === 11);
+await ev(`document.querySelector('#cancel').click()`);
+current = 'F08-E2'; await click('#a-gimp'); await sleep(200);
+await pickFile('#i-file', ged, 'a.ged'); await click('#i-rep'); await click('#go'); await sleep(300);
+check('замена требует подтверждения', (await ev(`document.querySelector('#dlg').textContent.includes('Заменить все данные?')`)));
+await click('#no'); await sleep(200);
+check('«Отмена» оставляет данные', (await rows()) === 11);
+current = 'F08-H1'; await click('#a-gimp'); await sleep(200);
+await pickFile('#i-file', ged, 'a.ged'); await click('#go'); await sleep(400);
+check('импорт в режиме «добавить»: отчёт и 22 человека', (await ev(`document.querySelector('#dlg').textContent.includes('Импорт завершён')`)) && (await rows()) === 22);
+await click('#ok'); await sleep(200);
+current = 'F08-H2'; await click('#a-bak'); await sleep(200); await hook(); await click('#save'); await sleep(300);
+const bak = await ev(`window.__blobs.at(-1).text()`);
+await ev(`document.querySelector('#cancel').click()`); await open(); // новые данные: свежий пример
+await click('#a-bak'); await sleep(200); await pickFile('#b-file', bak, 'b.json'); await click('#restore'); await sleep(250); await click('#yes'); await sleep(400);
+check('восстановление из копии возвращает 22 человека', (await rows()) === 22);
+current = 'F08-E3'; await click('#a-bak'); await sleep(200); await pickFile('#b-file', '{"a":1}', 'b.json'); await click('#restore'); await sleep(250); await click('#yes'); await sleep(300);
+check('чужой JSON отклонён, данные целы', (await ev(`!document.querySelector('#banner').hidden`)) && (await rows()) === 22);
+
 // ---- адаптивность ----
 current = 'MOB'; await open('#/persons'); await viewport(390, 844, true); await sleep(300);
 check('список 390px: нет горизонтальной прокрутки', (await ev(`document.documentElement.scrollWidth`)) <= 390);

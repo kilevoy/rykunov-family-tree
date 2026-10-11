@@ -65,3 +65,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .35); } dialog h2 { margin: 0 0 var
   td[data-l]::before { content: attr(data-l) ": "; color: var(--color-text-muted); font-size: var(--text-xs); }
   .badge-demo { order: 3; } .tabs { margin-left: 0; width: 100%; }
 }
+
+.panel h3 { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-base); }
+@media print {
+  .top, .actions, .toolbar, .skip, .banner, .toast, #preview, .panel.rels { display: none !important; }
+  .layout { display: block; } main { padding: 0; }
+  .treewrap { max-height: none; overflow: visible; border: 0; background: #fff; }
+  .treewrap svg { width: 100% !important; height: auto !important; }
+  body { background: #fff; }
+  article.panel { box-shadow: none; border: 0; }
+  .toolbar:has(#prn) { display: none; }
+}

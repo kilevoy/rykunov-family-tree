@@ -50,6 +50,18 @@ function ensure() {
 
 // ---------- даты ----------
 const pad = (n) => String(n).padStart(2, '0');
+// Разбор одной даты с точностью: {y, m|null, d|null} или null.
+export function parseSingle(s) {
+  const m = String(s).trim().match(/^(?:(\d{1,2})\.)?(?:(\d{1,2})\.)?(\d{4})$/);
+  if (!m) return null;
+  let d = m[1], mo = m[2];
+  if (d && !mo) { mo = d; d = undefined; }
+  const y = +m[3], mon = mo ? +mo : null, day = d ? +d : null;
+  if (y < 1000 || y > 2200) return null;
+  if (mon !== null && (mon < 1 || mon > 12)) return null;
+  if (day !== null) { const t = new Date(Date.UTC(y, mon - 1, day)); if (t.getUTCMonth() !== mon - 1 || t.getUTCDate() !== day) return null; }
+  return { y, m: mon, d: day };
+}
 function single(s) {
   const m = s.trim().match(/^(?:(\d{1,2})\.)?(?:(\d{1,2})\.)?(\d{4})$/);
   if (!m) return null;
@@ -251,6 +263,7 @@ export function addRelative(id, kind, fields, opts = {}) {
       let e = birthEvent(id);
       if (!e) { e = mkEvent('birth', ''); part(e.id, id, 'child'); }
       part(e.id, nid, kind);
+      if (parentTooYoung(id, nid)) throw new Error('Родитель не может родиться позже ребёнка');
     } else if (kind === 'brother' || kind === 'sister') {
       const pr = parentsOf(id);
       let e = birthEvent(nid); if (!e) { e = mkEvent('birth', ''); part(e.id, nid, 'child'); }
@@ -262,9 +275,11 @@ export function addRelative(id, kind, fields, opts = {}) {
     } else {
       let e = birthEvent(nid); if (!e) { e = mkEvent('birth', ''); part(e.id, nid, 'child'); }
       part(e.id, id, base.sex === 'M' ? 'father' : 'mother');
+      if (parentTooYoung(nid, id)) throw new Error('Родитель не может родиться позже ребёнка');
       if (opts.otherParentId) {
         const o = db.persons[opts.otherParentId]; if (!o || o.sex === base.sex || o.sex === 'U') throw new Error('Второй родитель должен быть другого пола');
         part(e.id, o.id, o.sex === 'M' ? 'father' : 'mother');
+        if (parentTooYoung(nid, o.id)) throw new Error('Родитель не может родиться позже ребёнка');
       }
     }
     save();
@@ -272,6 +287,94 @@ export function addRelative(id, kind, fields, opts = {}) {
   } catch (err) { db = JSON.parse(snapshot); save(); throw err; }   // откат при ошибке
 }
 export function exportJson() { ensure(); return JSON.stringify(db, null, 2); }
+
+// ---------- транзакции и связывание с существующими людьми (F03) ----------
+export function tx(fn) {
+  ensure();
+  const snap = JSON.stringify(db);
+  try { const r = fn(); save(); return r; }
+  catch (e) { db = JSON.parse(snap); save(); throw e; }
+}
+function isAncestorOf(anc, id) {          // anc — предок id?
+  const seen = new Set([id]); let layer = [id];
+  while (layer.length) {
+    const next = [];
+    for (const x of layer) { const p = parentsOf(x); for (const y of [p.father, p.mother]) if (y && !seen.has(y)) { if (y === anc) return true; seen.add(y); next.push(y); } }
+    layer = next;
+  }
+  return false;
+}
+function parentTooYoung(childId, parentId) {
+  const cb = birthEvent(childId)?.date_sort, pb = birthEvent(parentId)?.date_sort;
+  return !!(cb && pb && pb > cb);
+}
+// force: для импорта чужих файлов — связь сохраняем, а нарушение возрастного правила сообщаем результатом 'age'
+export function linkParent(childId, parentId, { force = false } = {}) {
+  ensure();
+  const c = db.persons[childId], p = db.persons[parentId];
+  if (!c || !p) throw new Error('Персона не найдена');
+  if (childId === parentId) throw new Error('Человек не может быть родителем самому себе');
+  if (p.sex === 'U') throw new Error('Сначала укажите пол родителя');
+  const role = p.sex === 'M' ? 'father' : 'mother';
+  if (parentsOf(childId)[role]) throw new Error(role === 'father' ? 'Отец уже указан' : 'Мать уже указана');
+  if (isAncestorOf(childId, parentId)) throw new Error('Так связать нельзя: этот человек — потомок будущего ребёнка');
+  const young = parentTooYoung(childId, parentId);
+  if (young && !force) throw new Error('Родитель не может родиться позже ребёнка');
+  let e = birthEvent(childId); if (!e) { e = mkEvent('birth', ''); part(e.id, childId, 'child'); }
+  part(e.id, parentId, role); save();
+  return young ? 'age' : 'ok';
+}
+export function linkSpouse(aId, bId, dateText = '') {
+  ensure();
+  const a = db.persons[aId], b = db.persons[bId];
+  if (!a || !b) throw new Error('Персона не найдена');
+  if (aId === bId) throw new Error('Нельзя заключить брак с самим собой');
+  if (a.sex === 'U' || b.sex === 'U') throw new Error('Сначала укажите пол обоих супругов');
+  if (a.sex === b.sex) throw new Error('В этой версии брак возможен только между мужчиной и женщиной');
+  if (spousesOf(aId).some((s) => s.id === bId)) throw new Error('Эти люди уже в браке');
+  const [h, w] = a.sex === 'M' ? [aId, bId] : [bId, aId];
+  const e = mkEvent('marriage', dateText); part(e.id, h, 'husband'); part(e.id, w, 'wife'); save();
+}
+export function linkRelative(id, kind, otherId, opts = {}) {
+  return tx(() => {
+    ensure();
+    if (!REL_KINDS[kind]) throw new Error('Неизвестный вид родства');
+    if (kind === 'brother' || kind === 'sister') throw new Error('Брата или сестру свяжите через общего родителя');
+    const other = db.persons[otherId]; if (!other) throw new Error('Выбранный человек не найден');
+    if (otherId === id) throw new Error('Нужен другой человек');
+    const need = REL_KINDS[kind].sex;
+    if (other.sex === 'U') updatePerson(otherId, { sex: need });
+    else if (other.sex !== need) throw new Error(`Пол выбранного человека не подходит: нужен «${REL_KINDS[kind].label.toLowerCase()}»`);
+    if (kind === 'father' || kind === 'mother') linkParent(id, otherId);
+    else if (kind === 'husband' || kind === 'wife') linkSpouse(id, otherId, opts.marriage_text ?? '');
+    else {
+      linkParent(otherId, id);
+      if (opts.otherParentId) linkParent(otherId, opts.otherParentId);
+    }
+    return decorate(db.persons[otherId]);
+  });
+}
+
+// ---------- хронология человека (для страницы персоны) ----------
+export function timeline(id) {
+  ensure(); const out = [];
+  const b = birthEvent(id); if (b) out.push({ type: 'birth', when: b.date_text, sort: b.date_sort });
+  for (const s of spousesOf(id)) { const e = db.events[s.eventId]; out.push({ type: 'marriage', when: e.date_text, sort: e.date_sort, otherId: s.id }); }
+  for (const c of childrenOf(id)) { const e = birthEvent(c); out.push({ type: 'child', when: e?.date_text ?? '', sort: e?.date_sort ?? null, otherId: c }); }
+  const dd = deathEvent(id); if (dd && !db.persons[id].is_living) out.push({ type: 'death', when: dd.date_text, sort: dd.date_sort });
+  return out.map((x, i) => ({ ...x, i })).sort((a, b2) => (a.sort ?? '9999').localeCompare(b2.sort ?? '9999') || a.i - b2.i);
+}
+
+// ---------- резервная копия ----------
+export function exportBackup() { ensure(); return JSON.stringify({ format: 'rodoslovnaya-backup', version: 1, saved_at: new Date().toISOString(), db }, null, 2); }
+export function importBackup(text) {
+  let o; try { o = JSON.parse(text); } catch { throw new Error('Файл копии повреждён: это не JSON'); }
+  const d = o?.format === 'rodoslovnaya-backup' ? o.db : null;
+  if (!d || typeof d.persons !== 'object' || typeof d.events !== 'object' || !Array.isArray(d.participants)) throw new Error('Это не файл резервной копии этого приложения');
+  for (const p of d.participants) if (!d.persons[p.person_id] || !d.events[p.event_id]) throw new Error('Файл копии повреждён: есть связи с несуществующими записями');
+  tx(() => { db = { persons: d.persons, events: d.events, participants: d.participants }; });
+  return { persons: Object.keys(d.persons).length };
+}
 
 // ---------- тестовые (вымышленные) данные ----------
 function seed() {

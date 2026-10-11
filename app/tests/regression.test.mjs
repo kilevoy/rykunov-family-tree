@@ -98,3 +98,46 @@ test('F05-E4 случайные семьи: дерево строится, ка�
     }
   }
 });
+test('F03 связывание с существующим человеком: правила и откат', () => {
+  A.resetStore(true);
+  const kid = A.createPerson({ given_name: 'Ребёнок', sex: 'M', birth_text: '2000' });
+  const dad = A.createPerson({ given_name: 'Отец', sex: 'M', birth_text: '1970' });
+  const unk = A.createPerson({ given_name: 'БезПола' });
+  A.linkRelative(kid.id, 'father', dad.id);
+  assert.equal(A.parentsOf(kid.id).father, dad.id);
+  assert.throws(() => A.linkRelative(kid.id, 'father', dad.id), /уже указан/);                // второй отец
+  assert.throws(() => A.linkRelative(kid.id, 'mother', dad.id), /Пол выбранного/);           // мужчина как мать
+  A.linkRelative(kid.id, 'mother', unk.id);                                                      // пол «не указан» → проставится
+  assert.equal(A.getPerson(unk.id).sex, 'F');
+  assert.throws(() => A.linkRelative(dad.id, 'father', kid.id), /потомок|позже/);               // цикл или возраст
+  assert.throws(() => A.linkRelative(kid.id, 'brother', dad.id), /общего родителя/);
+  assert.throws(() => A.linkRelative(kid.id, 'wife', kid.id), /другой человек/);
+  const w = A.createPerson({ given_name: 'Жена', sex: 'F' });
+  A.linkRelative(dad.id, 'wife', w.id, { marriage_text: '1995' });
+  assert.equal(A.spousesOf(dad.id)[0].dateText, '1995');
+  assert.throws(() => A.linkRelative(dad.id, 'wife', w.id), /уже в браке/);
+});
+test('F03 цикл: нельзя сделать предка своим потомком', () => {
+  A.resetStore(true);
+  const a = A.createPerson({ given_name: 'А', sex: 'M' });
+  const b = A.addRelative(a.id, 'son', { given_name: 'Б' });
+  const c = A.addRelative(b.id, 'son', { given_name: 'В' });
+  assert.throws(() => A.linkRelative(a.id, 'father', c.id), /потомок/);
+});
+test('F08 резервная копия: круг и защита от мусора', () => {
+  A.resetStore();
+  const txt = A.exportBackup(); const n = A.listPersons().length;
+  A.resetStore(true); assert.equal(A.listPersons().length, 0);
+  A.importBackup(txt); assert.equal(A.listPersons().length, n);
+  assert.throws(() => A.importBackup('не json'), /не JSON/);
+  assert.throws(() => A.importBackup('{"a":1}'), /не файл резервной копии/);
+  const broken = JSON.parse(txt); broken.db.participants[0].person_id = 'нет'; 
+  assert.throws(() => A.importBackup(JSON.stringify(broken)), /повреждён/);
+  assert.equal(A.listPersons().length, n);                                                       // после ошибки данные целы
+});
+test('возраст родителя: добавление отца моложе ребёнка отклоняется с откатом', () => {
+  A.resetStore(true);
+  const kid = A.createPerson({ given_name: 'К', sex: 'M', birth_text: '1990' });
+  assert.throws(() => A.addRelative(kid.id, 'father', { given_name: 'О', birth_text: '2000' }), /позже ребёнка/);
+  assert.equal(A.listPersons().length, 1);
+});
