@@ -156,10 +156,15 @@ function renderTree(m) {
 // ---------- диалоги ----------
 function openDialog(html) { const d = $('#dlg'); d.innerHTML = html; if (!d.open) d.showModal(); return d; }
 const closeDialog = () => $('#dlg').close();
+// BUG-008: после действия перерисовка убирает элемент с фокусом — возвращаем фокус на выбранную строку или область содержимого
+function restoreFocus() {
+  const el = document.querySelector('tbody tr[aria-selected="true"]') ?? document.querySelector('.card.sel') ?? $('#main');
+  el?.focus();
+}
 
 function confirmBox(title, text, onYes) {
   const d = openDialog(`<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="foot"><button id="no">Отмена</button><button id="yes" class="danger">Подтвердить</button></div>`);
-  d.querySelector('#no').onclick = closeDialog; d.querySelector('#yes').onclick = () => { closeDialog(); onYes(); };
+  d.querySelector('#no').onclick = closeDialog; d.querySelector('#yes').onclick = () => { closeDialog(); onYes(); restoreFocus(); };
 }
 function confirmDelete(id) {
   const p = D.getPerson(id); if (!p) return;
@@ -201,13 +206,16 @@ function bindForm(d, onSubmit, sexFixed) {
   d.querySelector('#cancel').onclick = closeDialog;
   f.onsubmit = (e) => {
     e.preventDefault();
+    if (f.dataset.busy) return;                       // BUG-002: повторное нажатие игнорируем
+    f.dataset.busy = '1';
     const data = {
       surname: f.surname.value, given_name: f.given_name.value, patronymic: f.patronymic.value, maiden_name: f.maiden_name.value,
       sex: sexFixed ?? f.sex.value, is_living: f.is_living.checked, birth_text: f.birth_text.value, death_text: f.is_living.checked ? '' : f.death_text.value,
       occupation: f.occupation.value, comment: f.comment.value, privacy_level: +f.privacy_level.value,
     };
     if (f.marriage_text) data.marriage_text = f.marriage_text.value;
-    try { onSubmit(data, f.other_parent?.value || null); closeDialog(); } catch (err) { d.querySelector('#form-err').textContent = err.message; }
+    try { onSubmit(data, f.other_parent?.value || null); closeDialog(); restoreFocus(); }
+    catch (err) { d.querySelector('#form-err').textContent = err.message; delete f.dataset.busy; }
   };
   f.surname.focus();
 }
@@ -242,4 +250,6 @@ function openRelativeDialog(id) {
 }
 
 window.addEventListener('hashchange', render);
+window.addEventListener('storage', (e) => { if (!$('#dlg').open && (e.key === null || e.key.startsWith('rodoslovnaya'))) guard(render); });   // BUG-001: подхватываем правки из другой вкладки
 guard(render);
+if (D.storageMode() === 'memory') banner('Память браузера недоступна (возможно, приватный режим): данные будут жить, пока открыта эта вкладка, и пропадут после закрытия.');

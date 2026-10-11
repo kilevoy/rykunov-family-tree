@@ -4,12 +4,22 @@
 
 const KEY = 'rodoslovnaya.demo.v1';
 const mem = {};
-const store = {
-  get: (k) => (globalThis.localStorage ? globalThis.localStorage.getItem(k) : (mem[k] ?? null)),
-  set: (k, v) => (globalThis.localStorage ? globalThis.localStorage.setItem(k, v) : (mem[k] = v)),
-};
-const newId = () => globalThis.crypto.randomUUID();
 let db = null;
+let lastRaw = null;       // что мы сами прочитали или записали в последний раз
+let memOnly = false;      // хранилище браузера недоступно: работаем только в памяти
+const newId = () => globalThis.crypto.randomUUID();
+
+function readRaw() {
+  if (memOnly) return undefined;
+  try { return globalThis.localStorage ? globalThis.localStorage.getItem(KEY) : (mem[KEY] ?? null); }
+  catch { memOnly = true; return undefined; }
+}
+function writeRaw(v) {
+  if (memOnly) return;
+  try { if (globalThis.localStorage) globalThis.localStorage.setItem(KEY, v); else mem[KEY] = v; lastRaw = v; }
+  catch { memOnly = true; }
+}
+export const storageMode = () => (memOnly ? 'memory' : 'browser');
 
 export const REL_KINDS = {
   father: { label: 'Отец', sex: 'M' },
@@ -22,16 +32,19 @@ export const REL_KINDS = {
   daughter: { label: 'Дочь', sex: 'F' },
 };
 
-function save() { store.set(KEY, JSON.stringify(db)); }
+function save() { writeRaw(JSON.stringify(db)); }
 export function resetStore(empty = false) {
   db = { persons: {}, events: {}, participants: [] };
+  lastRaw = readRaw() ?? null;          // чтобы вложенные вызовы ensure() не перечитывали пустое хранилище
   if (!empty) seed();
   save();
 }
 function ensure() {
-  if (db) return;
-  const raw = store.get(KEY);
-  if (raw) { try { db = JSON.parse(raw); return; } catch { /* повреждено: пересоздаём */ } }
+  // Каждый раз сверяемся с хранилищем: другая вкладка могла изменить данные (BUG-001).
+  const raw = readRaw();
+  if (raw === undefined) { if (!db) resetStore(); return; }       // только память
+  if (db && raw === lastRaw) return;
+  if (raw) { try { db = JSON.parse(raw); lastRaw = raw; return; } catch { /* повреждено: пересоздаём */ } }
   resetStore();
 }
 
@@ -118,14 +131,31 @@ export function lifeText(p) {
   if (!b && !d) return '';
   return p.is_living ? `${b}` : `${b || '?'} – ${d || '?'}`;
 }
+const LIMITS = { surname: 100, given_name: 100, patronymic: 100, maiden_name: 100, occupation: 200, comment: 20000, birth_text: 60, death_text: 60 };
+const FIELD_NAMES = { surname: 'Фамилия', given_name: 'Имя', patronymic: 'Отчество', maiden_name: 'Девичья фамилия', occupation: 'Занятие', comment: 'Комментарий', birth_text: 'Дата рождения', death_text: 'Дата смерти' };
 function validate(f, partial = false) {
-  if (!partial && !(f.surname || f.given_name)) throw new Error('Укажите хотя бы фамилию или имя');
+  if (!partial && !((f.surname ?? '').trim() || (f.given_name ?? '').trim())) throw new Error('Укажите хотя бы фамилию или имя');
+  if (partial && ('surname' in f || 'given_name' in f) && f.surname !== undefined && f.given_name !== undefined && !f.surname.trim() && !f.given_name.trim()) throw new Error('Укажите хотя бы фамилию или имя');
+  for (const [k, max] of Object.entries(LIMITS)) if (typeof f[k] === 'string' && f[k].length > max) throw new Error(`Слишком длинное значение в поле «${FIELD_NAMES[k]}» (не больше ${max} знаков)`);
   if (f.sex !== undefined && !['M', 'F', 'U'].includes(f.sex)) throw new Error('Пол: M, F или U');
   if (f.privacy_level !== undefined && !(f.privacy_level >= 0 && f.privacy_level <= 10)) throw new Error('Конфиденциальность от 0 до 10');
   for (const k of ['birth_text', 'death_text']) if (f[k] !== undefined) { const d = parseDate(f[k]); if (d.error) throw new Error(d.error); }
 }
+function checkOrder(birthText, deathText, living) {
+  if (living) return;
+  const b = parseDate(birthText ?? '').sort, d = parseDate(deathText ?? '').sort;
+  if (b && d && d < b) throw new Error('Дата смерти раньше даты рождения');
+}
+const SEX_NEEDED = { father: 'M', husband: 'M', mother: 'F', wife: 'F' };
+function checkSexChange(id, sex) {
+  for (const p of db.participants) {
+    if (p.person_id !== id) continue;
+    const need = SEX_NEEDED[p.role];
+    if (need && need !== sex) throw new Error(`Нельзя изменить пол: человек указан как ${{ father: 'отец', mother: 'мать', husband: 'муж', wife: 'жена' }[p.role]} в событиях. Сначала уберите эту связь.`);
+  }
+}
 export function createPerson(f) {
-  ensure(); validate(f);
+  ensure(); validate(f); checkOrder(f.birth_text, f.death_text, !!f.is_living);
   const p = {
     id: newId(), surname: f.surname?.trim() ?? '', given_name: f.given_name?.trim() ?? '', patronymic: f.patronymic?.trim() ?? '',
     maiden_name: f.maiden_name?.trim() || null, sex: f.sex ?? 'U', is_living: !!f.is_living, occupation: f.occupation?.trim() ?? '',
@@ -142,6 +172,9 @@ export function updatePerson(id, patch, version) {
   const p = db.persons[id]; if (!p) throw new Error('Персона не найдена');
   if (version !== undefined && version !== p.version) { const e = new Error('Запись изменили в другом окне. Обновите страницу.'); e.code = 'CONFLICT'; throw e; }
   validate(patch, true);
+  const living = patch.is_living ?? p.is_living;
+  checkOrder(patch.birth_text ?? birthEvent(id)?.date_text, patch.death_text ?? deathEvent(id)?.date_text, living);
+  if (patch.sex !== undefined && patch.sex !== p.sex) checkSexChange(id, patch.sex);
   for (const k of ['surname', 'given_name', 'patronymic', 'maiden_name', 'sex', 'is_living', 'occupation', 'comment', 'privacy_level']) if (patch[k] !== undefined) p[k] = typeof patch[k] === 'string' ? patch[k].trim() : patch[k];
   if (patch.birth_text !== undefined) setLife(id, 'birth', 'child', patch.birth_text);
   if (patch.death_text !== undefined || patch.is_living) setLife(id, 'death', 'subject', p.is_living ? '' : (patch.death_text ?? deathEvent(id)?.date_text ?? ''));
