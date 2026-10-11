@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Родословная — рабочая версия</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">К содержимому</a>
+  <header class="top">
+    <h1>Родословная</h1>
+    <span class="badge-demo" title="Данные хранятся только в этом браузере">Тестовые данные · только в этом браузере</span>
+    <nav class="tabs" aria-label="Разделы" role="tablist" id="tabs"></nav>
+  </header>
+  <div class="layout">
+    <aside class="actions" aria-label="Действия" id="actions"></aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+  <div id="banner" class="banner" role="alert" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="dlg"></dialog>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
