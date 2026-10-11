@@ -4,6 +4,8 @@ import { layoutTree, CARD } from './tree.js';
 import * as G from './gedcom.js';
 
 const $ = (s) => document.querySelector(s);
+// В окне просмотра (встроенная страница) нельзя печатать и скачивать файлы: кнопки печати скрываются, файлы показываются текстом.
+const PRINT = !globalThis.__NOPRINT;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const TABS = [['persons', 'Персоны'], ['tree', 'Древо'], ['events', 'События'], ['documents', 'Документы'], ['places', 'Места'], ['sources', 'Источники'], ['families', 'Роды'], ['tasks', 'Задачи']];
 const state = { selected: null, q: '', onlyLiving: false, zoom: 1 };
@@ -150,7 +152,7 @@ function renderTree(m) {
   const marr = (mm) => { const x1 = mm.a.x + CARD.w, x2 = mm.b.x, y = mm.a.y + CARD.h / 2; return `<line class="spouse-line" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"></line>${mm.dateText ? `<text class="mdate" x="${(x1 + x2) / 2}" y="${y - 4}" text-anchor="middle">${esc(mm.dateText)}</text>` : ''}`; };
   m.innerHTML = `
     <div class="toolbar"><h2 style="margin:0">Древо: ${esc(D.displayName(root))}</h2>
-      <button id="zo" aria-label="Уменьшить">−</button><span aria-live="polite">${Math.round(z * 100)}%</span><button id="zi" aria-label="Увеличить">+</button><button id="z1">100%</button><button id="prn">Печать / PDF</button></div>
+      <button id="zo" aria-label="Уменьшить">−</button><span aria-live="polite">${Math.round(z * 100)}%</span><button id="zi" aria-label="Увеличить">+</button><button id="z1">100%</button>${PRINT ? '<button id="prn">Печать / PDF</button>' : ''}</div>
     <div class="treewrap"><svg id="svg" width="${L.width * z}" height="${L.height * z}" viewBox="0 0 ${L.width} ${L.height}" role="group" aria-label="Родословное древо">
       ${L.links.map(linkPath).join('')}${L.marriages.map(marr).join('')}${L.nodes.map(cardSvg).join('')}</svg></div>
     <section class="panel rels" aria-label="Родство списком"><h2>Родство списком</h2><ul>
@@ -163,7 +165,7 @@ function renderTree(m) {
   $('#zi').onclick = () => { state.zoom = Math.min(2, +(state.zoom + 0.1).toFixed(2)); renderTree(m); };
   $('#zo').onclick = () => { state.zoom = Math.max(0.4, +(state.zoom - 0.1).toFixed(2)); renderTree(m); };
   $('#z1').onclick = () => { state.zoom = 1; renderTree(m); };
-  $('#prn').onclick = () => window.print();
+  $('#prn')?.addEventListener('click', () => window.print());
 }
 
 // ---------- диалоги ----------
@@ -301,7 +303,7 @@ function renderPerson(m) {
   };
   const list = (ids) => (ids.length ? ids.map(nm).join(', ') : '<span class="hint">нет данных</span>');
   m.innerHTML = `
-    <div class="toolbar"><a href="#/persons">← К списку</a><button id="prn">Печать / PDF</button><a class="btn" href="#/tree/${p.id}" style="display:inline-flex;align-items:center;text-decoration:none">Показать на древе</a></div>
+    <div class="toolbar"><a href="#/persons">← К списку</a>${PRINT ? '<button id="prn">Печать / PDF</button>' : ''}<a class="btn" href="#/tree/${p.id}" style="display:inline-flex;align-items:center;text-decoration:none">Показать на древе</a></div>
     <article class="panel" aria-label="Страница человека">
       <h2 style="font-size:var(--text-xl);line-height:var(--text-xl-line)">${esc(D.displayName(p))}</h2>
       ${p.maiden_name ? `<p class="hint">урождённая ${esc(p.maiden_name)}</p>` : ''}
@@ -318,14 +320,24 @@ function renderPerson(m) {
       <h3>Хронология</h3>
       ${D.timeline(p.id).length ? `<ul>${D.timeline(p.id).map(line).join('')}</ul>` : '<p class="hint">Событий пока нет.</p>'}
     </article>`;
-  $('#prn').onclick = () => window.print();
+  $('#prn')?.addEventListener('click', () => window.print());
   m.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => { state.selected = b.dataset.go; location.hash = `#/person/${b.dataset.go}`; }));
 }
 
 // ---------- файлы: GEDCOM и резервная копия ----------
 function download(name, text, mime) {
+  if (globalThis.__NODOWNLOAD) return showText(name, text);
   const url = URL.createObjectURL(new Blob([text], { type: mime }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+// Запасной путь без скачивания: показать содержимое файла, чтобы скопировать его вручную.
+function showText(name, text) {
+  const d = openDialog(`<h2>${esc(name)}</h2><p class="hint">Скачивание в этом окне недоступно. Скопируйте текст и сохраните его в файл с этим именем.</p>
+    <div class="field"><label for="t-out">Содержимое файла</label><textarea id="t-out" readonly rows="10"></textarea></div>
+    <div class="foot"><button id="t-copy">Копировать</button><button id="t-close" class="primary">Закрыть</button></div>`);
+  const ta = d.querySelector('#t-out'); ta.value = text;
+  d.querySelector('#t-close').onclick = closeDialog;
+  d.querySelector('#t-copy').onclick = async () => { try { await navigator.clipboard.writeText(text); toast('Скопировано'); } catch { ta.focus(); ta.select(); toast('Выделено: нажмите Ctrl+C'); } };
 }
 const stamp = () => new Date().toISOString().slice(0, 10);
 const MAX_FILE = 20 * 1024 * 1024;
